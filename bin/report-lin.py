@@ -98,6 +98,7 @@ def make_report(lin_file, data_file, report_file, output_file):
             # Legacy column name: this is a direct group-node count, not a
             # claim that these reads uniquely identify a strain.
             'Unique_Assigned_reads': unique,
+            'Direct_Assigned_reads': unique,
             'Percentage_unique_assigned_reads': 100.0 * unique / total_reads if total_reads else 0.0,
             'Total_reads_length': lengths[taxid] if taxid is not None else 0,
             'LINtax_note': '' if path else 'group_prefix_missing_from_taxonomy',
@@ -110,12 +111,20 @@ def make_report(lin_file, data_file, report_file, output_file):
         'Assigned_reads': total_reads,
         'Percentage_assigned_reads': 100.0 if total_reads else 0.0,
         'Unique_Assigned_reads': total_unique,
+        'Direct_Assigned_reads': total_unique,
         'Percentage_unique_assigned_reads': 100.0 * total_unique / total_reads if total_reads else 0.0,
         'Total_reads_length': total_length,
         'LINtax_note': 'classified_fragments; unique_count_is_direct_group_node_assignments',
     })
     rows.append(total)
     return pd.DataFrame(rows)
+
+
+def filter_report(frame, min_assigned_reads=2):
+    if min_assigned_reads < 1:
+        raise ValueError('Minimum assigned reads must be at least 1')
+    return frame[(frame['LINgroup_Name'] == 'Total_reads') |
+                 (frame['Assigned_reads'] >= min_assigned_reads)].copy()
 
 
 def main():
@@ -125,9 +134,15 @@ def main():
     parser.add_argument('--in_file_report', required=True)
     parser.add_argument('--in_file_output', required=True)
     parser.add_argument('--output', required=True)
+    parser.add_argument('--raw-output', help='Optional unfiltered group-count table')
+    parser.add_argument('--min-assigned-reads', type=int, default=2,
+                        help='Minimum clade fragments for a reported group (default: 2)')
     args = parser.parse_args()
-    make_report(args.lin_file, args.data_file, args.in_file_report,
-                args.in_file_output).to_csv(args.output, index=False)
+    frame = make_report(args.lin_file, args.data_file, args.in_file_report, args.in_file_output)
+    filtered = filter_report(frame, args.min_assigned_reads)
+    if args.raw_output:
+        frame.to_csv(args.raw_output, index=False)
+    filtered.to_csv(args.output, index=False)
 
 
 if __name__ == '__main__':

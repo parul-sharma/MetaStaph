@@ -158,7 +158,7 @@ def read_sourmash(sourmash_file: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def read_lintax(linreport_file: str) -> pd.DataFrame:
+def read_lintax(linreport_file: str, min_assigned_reads: int = 2) -> pd.DataFrame:
     rows = []
     tool = "LINtax"
     if not linreport_file:
@@ -179,7 +179,7 @@ def read_lintax(linreport_file: str) -> pd.DataFrame:
         df["Percentage_assigned_reads"] = pd.to_numeric(df["Percentage_assigned_reads"], errors="coerce").fillna(0.0)
         df = df[(df["Percentage_assigned_reads"] > 0)]
     df["Assigned_reads"] = pd.to_numeric(df["Assigned_reads"], errors="coerce").fillna(0).astype(int)
-    df = df[df["Assigned_reads"] > 0]
+    df = df[df["Assigned_reads"] >= min_assigned_reads]
     df = df.sort_values("Assigned_reads", ascending=False)
     for i, (_, rec) in enumerate(df.iterrows(), start=1):
         raw = str(rec["LINgroup_Name"])
@@ -189,7 +189,7 @@ def read_lintax(linreport_file: str) -> pd.DataFrame:
 
 def main(kraken_report: str, strainge_file: str, linreport_file: str,
          sourmash_file: str, strainscan_dir: str, sample_id: str,
-         output_summary: str, output_evidence: str):
+         output_summary: str, output_evidence: str, lintax_min_reads: int = 2):
     kraken = parse_kraken_report(kraken_report)
     classified_reads = int(kraken["Classified_reads"])
 
@@ -197,7 +197,7 @@ def main(kraken_report: str, strainge_file: str, linreport_file: str,
         read_strainge(strainge_file),
         read_strainscan(strainscan_dir),
         read_sourmash(sourmash_file),
-        read_lintax(linreport_file),
+        read_lintax(linreport_file, lintax_min_reads),
     ]
     frames = [frame for frame in evidence_frames if frame is not None and not frame.empty]
     if frames:
@@ -240,6 +240,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="MetaStaph: summarize first-pass classified reads from Kraken2 report and preserve tool evidence.")
     ap.add_argument("-kr", "--kraken_report", required=True, help="First-pass Kraken2 report generated with the LINtax database.")
     ap.add_argument("--target_taxid", type=int, help=argparse.SUPPRESS)  # Legacy CLI compatibility; unused.
+    ap.add_argument("--lintax_min_reads", type=int, default=2)
     ap.add_argument("-st", "--strainge", required=False, help="Path to StrainGE strains TSV.")
     ap.add_argument("-lr", "--linreport", required=False, help="Path to LINtax report CSV.")
     ap.add_argument("-sm", "--sourmash", required=False, help="Path to sourmash gather CSV.")
@@ -249,4 +250,5 @@ if __name__ == "__main__":
     ap.add_argument("-e", "--evidence", required=True, help="Evidence TSV output path.")
     args = ap.parse_args()
     main(args.kraken_report, args.strainge, args.linreport,
-         args.sourmash, args.strainscan, args.sample, args.output, args.evidence)
+         args.sourmash, args.strainscan, args.sample, args.output, args.evidence,
+         args.lintax_min_reads)

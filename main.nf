@@ -8,6 +8,7 @@ params.outdir       = params.outdir       ?: "$baseDir/output"
 params.cleanup      = (params.cleanup != null) ? params.cleanup : true
 params.target_taxid = params.target_taxid ?: 1280
 params.kraken_confidence = params.kraken_confidence ?: 0.1
+params.lintax_min_reads = (params.lintax_min_reads != null) ? params.lintax_min_reads : 2
 params.help         = params.help ?: false
 
 if (params.help) {
@@ -20,6 +21,7 @@ if (params.help) {
         [--strainscan_db '/path/to/StrainScan/database/root'] \\
         [--target_taxid 1280] \\
         [--kraken_confidence 0.3] \\
+        [--lintax_min_reads 2] \\
       [--cleanup true|false]
 
   Notes:
@@ -32,6 +34,9 @@ if (params.help) {
 
 // Tasks execute in work directories; resolve database paths from the launch directory.
 def database_dir = file(params.database_dir).toAbsolutePath().normalize()
+if (!(params.lintax_min_reads.toString() ==~ /[1-9][0-9]*/)) {
+  error '--lintax_min_reads must be a positive integer'
+}
 def strainscan_db = file(params.strainscan_db ?: "${database_dir}/strainscan_db").toAbsolutePath().normalize()
 if (!file("${strainscan_db}/Tree_database/tree_structure.txt").exists() &&
     file("${strainscan_db}/db/Tree_database/tree_structure.txt").exists()) {
@@ -160,6 +165,7 @@ process run_lintax {
 
   output:
   tuple val(sample_id), path("${sample_id}.LINreport.txt"), emit: lintax_out
+  tuple val(sample_id), path("${sample_id}.LINreport.raw.csv"), emit: lintax_raw
 
   script:
   """
@@ -168,6 +174,8 @@ process run_lintax {
     --data_file "${database_dir}/LINtax_db/taxonomy/data.txt" \\
     --in_file_report ${kraken_report} \\
     --in_file_output ${kraken_output} \\
+    --min-assigned-reads ${params.lintax_min_reads} \\
+    --raw-output ${sample_id}.LINreport.raw.csv \\
     --output ${sample_id}.LINreport.txt
 
   [ -f ${sample_id}.LINreport.txt ] || touch ${sample_id}.LINreport.txt
@@ -290,6 +298,7 @@ process run_global_report {
     -kr ${kraken_report} \\
     -st ${strainge_out} \\
     -lr ${lintax_out} \\
+    --lintax_min_reads ${params.lintax_min_reads} \\
     -sm ${sourmash_out} \\
     -sc ${strainscan_out} \\
     -s ${sample_id} \\

@@ -80,7 +80,39 @@ class LINtaxTests(unittest.TestCase):
         path = self.work / 'LINreport.txt'
         self.make().reset_index().to_csv(path, index=False)
         hits = report.read_lintax(str(path))
-        self.assertEqual(set(hits.Raw_hit), {'A', 'B'})
+        self.assertEqual(set(hits.Raw_hit), {'A'})
+        self.assertEqual(set(report.read_lintax(str(path), 1).Raw_hit), {'A', 'B'})
+
+    def test_filter_preserves_descendant_supported_group_with_zero_direct_reads(self):
+        self.groups = ROOT / 'bin/staph_lintax_lingroups.tsv'
+        self.taxonomy = ROOT / 'tests/fixtures/lintax_sample_taxonomy.tsv'
+        counts = [
+            (0, 434, 434), (1, 273091, 0), (8, 273091, 268121),
+            (21, 4968, 1561), (22, 3407, 838), (23, 2569, 271),
+            (419, 2297, 0), (427, 2297, 2297), (72, 1, 0),
+            (1046, 1, 1), (794, 1, 0), (797, 1, 1), (872, 1, 0), (883, 1, 1),
+        ]
+        self.kreport.write_text(''.join(
+            f'0\t{clade}\t{direct}\tR\t{taxid}\ttaxon\n'
+            for taxid, clade, direct in counts))
+        # No original per-read output was supplied; this regression tests counts.
+        self.koutput.write_text('')
+        raw = lin.make_report(self.groups, self.taxonomy, self.kreport, self.koutput)
+        filtered = lin.filter_report(raw)
+        hits = filtered[filtered.LINgroup_Name != 'Total_reads']
+        self.assertEqual(list(hits.LINgroup_Name), ['CC97_S99.5_44'])
+        self.assertEqual(hits.iloc[0].Assigned_reads, 2297)
+        self.assertEqual(hits.iloc[0].Direct_Assigned_reads, 0)
+        self.assertEqual(hits.iloc[0].Unique_Assigned_reads, 0)
+        self.assertEqual(raw.loc[raw.LINgroup_Name == 'Total_reads', 'Assigned_reads'].iloc[0], 273091)
+        self.assertEqual((raw.Assigned_reads == 1).sum(), 3)
+
+    def test_minimum_read_threshold(self):
+        frame = self.make().reset_index()
+        self.assertEqual(list(lin.filter_report(frame).LINgroup_Name), ['A', 'Total_reads'])
+        self.assertEqual(list(lin.filter_report(frame, 1).LINgroup_Name), ['A', 'B', 'Total_reads'])
+        with self.assertRaises(ValueError):
+            lin.filter_report(frame, 0)
 
     def test_empty_kraken_files(self):
         self.kreport.write_text('')
