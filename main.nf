@@ -216,7 +216,7 @@ process run_strainge {
 
     script:
     """
-    bash "$baseDir/bin/run_strainge.sh" "${sample_id}" "${sample_hdf5}" "${database_dir}/pan-genome-db_70.hdf5"
+    bash "$baseDir/bin/run_strainge.sh" "${sample_id}" "${sample_hdf5}" "${database_dir}/pan-genome-db_9.hdf5"
     """
 }
 

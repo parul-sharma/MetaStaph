@@ -37,3 +37,7 @@ work/
 # OS/editor junk
 .DS_Store
 *.swp
+
+# StrainGE reference database downloaded from Figshare
+/databases/pan-genome-db_9.hdf5
+/databases/pan-genome-db_9.hdf5.part

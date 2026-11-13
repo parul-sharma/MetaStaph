@@ -6,7 +6,7 @@ MetaStaph is a Nextflow workflow for mixed-strain-aware analysis of *Staphylococ
 
 ### 1. Install Git LFS, then clone
 
-The database files are large and stored with [Git LFS](https://git-lfs.com/). Install Git LFS before cloning so the actual database files are downloaded instead of small pointer files.
+The bundled database files are large and stored with [Git LFS](https://git-lfs.com/). Install Git LFS before cloning so the actual database files are downloaded instead of small pointer files. The StrainGE database is hosted separately on Figshare; download it in step 3 below.
 
 On Ubuntu or Debian:
 
@@ -45,6 +45,19 @@ conda activate metastaph
 ```
 
 The included [nextflow.config](nextflow.config) enables Conda environments and prefers Mamba. Nextflow will create the tool environments defined under `envs/` on the first run.
+
+### 3. Download the StrainGE database
+
+Download `pan-genome-db_9.hdf5` (approximately 1.67 GB) from [Figshare, version 1](https://doi.org/10.6084/m9.figshare.34999555.v1). From the repository directory, run:
+
+```bash
+mkdir -p databases
+wget -c -O databases/pan-genome-db_9.hdf5.part https://ndownloader.figshare.com/files/71401612
+echo 'd330826cc16216248c97aae331af4fa5  databases/pan-genome-db_9.hdf5.part' | md5sum -c - && \
+  mv databases/pan-genome-db_9.hdf5.part databases/pan-genome-db_9.hdf5
+```
+
+The `.part` file allows interrupted downloads to resume and is renamed only after checksum verification. On macOS, use `md5 databases/pan-genome-db_9.hdf5.part` to compare against `d330826cc16216248c97aae331af4fa5`, then rename the verified file. The pipeline expects `databases/pan-genome-db_9.hdf5`; this file is downloaded separately and is not tracked in Git.
 
 ## Input data
 
