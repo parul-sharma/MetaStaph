@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Summarize Kraken2 Staphylococcus aureus reads and preserve tool evidence.
+"""Summarize first-pass Kraken2 classified fragments and preserve tool evidence.
 
-Classified reads are read from the Kraken2 report's clade count for the target
-taxid. Tool hits remain uncollapsed in the evidence TSV; no species-specific
-strain consensus is inferred here.
+Direct assignments are summed across classified taxa, avoiding double counting
+nested clade totals. For paired input Kraken counts each read pair as one fragment.
 """
 
 import argparse
@@ -29,37 +28,41 @@ def normalize_hit(s: str) -> str:
     return x
 
 
-def parse_kraken_report(report_path: str, target_taxid: int) -> Dict[str, object]:
-    out = {"Target_reads": 0, "Kraken_note": ""}
+def parse_kraken_report(report_path: str) -> Dict[str, object]:
+    out = {"Classified_reads": 0, "Kraken_note": ""}
     if not report_path:
         out["Kraken_note"] = "kraken_report_missing"
         return out
-
     path = Path(report_path)
     if not path.exists() or path.stat().st_size == 0:
         out["Kraken_note"] = "kraken_report_empty"
         return out
 
-    matches = []
+    parsed_rows = 0
+    malformed_rows = 0
     for line in path.read_text(errors="replace").splitlines():
+        if not line.strip():
+            continue
         fields = line.split("\t")
-        if len(fields) < 6:
-            continue
         try:
+            if len(fields) < 6:
+                raise ValueError("expected six report columns")
             taxid = int(fields[4])
-            clade_reads = int(fields[1])
+            direct_reads = int(fields[2])
+            if direct_reads < 0:
+                raise ValueError("negative read count")
         except ValueError:
+            malformed_rows += 1
             continue
-        if taxid == target_taxid:
-            matches.append(clade_reads)
-
-    if len(matches) == 1:
-        out["Target_reads"] = matches[0]
-    elif len(matches) > 1:
-        out["Kraken_note"] = "target_taxid_duplicated_in_report"
-    else:
-        out["Kraken_note"] = "target_taxid_not_found"
+        parsed_rows += 1
+        if taxid != 0 and fields[3].strip() != "U":
+            out["Classified_reads"] += direct_reads
+    if not parsed_rows:
+        out["Kraken_note"] = "kraken_report_no_valid_rows"
+    elif malformed_rows:
+        out["Kraken_note"] = "kraken_report_malformed_rows"
     return out
+
 
 def _row(tool: str, raw: str, hit_rank: int, evidence_value, evidence_metric: str) -> Dict[str, object]:
     norm = normalize_hit(raw)
@@ -89,6 +92,11 @@ def read_strainge(strainge_file: str) -> pd.DataFrame:
     score_col = next((c for c in ["gcov", "cov", "coverage"] if c in df.columns), None)
     if name_col is None:
         return pd.DataFrame(rows)
+    # Historical placeholders used NA and were mistakenly counted as strain hits.
+    df = df[df[name_col].notna()]
+    df = df[~df[name_col].astype(str).str.strip().str.lower().isin(
+        ["", "na", "nan", "none", "null", "-"]
+    )]
     if score_col:
         df[score_col] = pd.to_numeric(df[score_col], errors="coerce").fillna(0.0)
         df = df.sort_values(score_col, ascending=False)
@@ -113,7 +121,8 @@ def read_strainscan(strainscan_dir: str) -> pd.DataFrame:
         return pd.DataFrame(rows)
     if "Strain_Name" not in df.columns:
         return pd.DataFrame(rows)
-    score_col = "Predicted_Depth (Enet)" if "Predicted_Depth (Enet)" in df.columns else None
+    score_col = next((c for c in ["Predicted_Depth", "Predicted_Depth (Enet)",
+                                  "Predicted_Depth (Ab*cls_depth)"] if c in df.columns), None)
     if score_col:
         df[score_col] = pd.to_numeric(df[score_col], errors="coerce").fillna(0.0)
         df = df.sort_values(score_col, ascending=False)
@@ -175,11 +184,11 @@ def read_lintax(linreport_file: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def main(kraken_report: str, target_taxid: int, strainge_file: str, linreport_file: str,
+def main(kraken_report: str, strainge_file: str, linreport_file: str,
          sourmash_file: str, strainscan_dir: str, sample_id: str,
          output_summary: str, output_evidence: str):
-    kraken = parse_kraken_report(kraken_report, target_taxid)
-    target_reads = int(kraken["Target_reads"])
+    kraken = parse_kraken_report(kraken_report)
+    classified_reads = int(kraken["Classified_reads"])
 
     evidence_frames = [
         read_strainge(strainge_file),
@@ -202,17 +211,14 @@ def main(kraken_report: str, target_taxid: int, strainge_file: str, linreport_fi
     notes = []
     if kraken["Kraken_note"]:
         notes.append(kraken["Kraken_note"])
-    if target_reads > 0 and not tools_reporting:
-        notes.append("target_reads_present_but_no_strain_tool_hits")
-    if target_reads == 0 and tools_reporting:
-        notes.append("strain_tool_hits_present_but_no_target_reads")
+    if classified_reads > 0 and not tools_reporting:
+        notes.append("classified_reads_present_but_no_strain_tool_hits")
+    if classified_reads == 0 and tools_reporting:
+        notes.append("strain_tool_hits_present_but_no_classified_reads")
 
     summary = pd.DataFrame([{
         "Sample": sample_id,
-        "Target_species": "Staphylococcus aureus",
-        "Target_taxid": target_taxid,
-        "Target_species_reads": target_reads,
-        "Target_species_detected": int(target_reads > 0),
+        "Classified_reads": classified_reads,
         "Kraken_note": kraken["Kraken_note"] or "-",
         "Tools_reporting_n": f"{len(tools_reporting)}/{len(TOOLS)}",
         "Tools_reporting": ";".join(tools_reporting) if tools_reporting else "-",
@@ -228,9 +234,9 @@ def main(kraken_report: str, target_taxid: int, strainge_file: str, linreport_fi
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="MetaStaph: summarize target reads from Kraken2 report and preserve tool evidence.")
-    ap.add_argument("-kr", "--kraken_report", required=True, help="Kraken2 report generated with the LINtax database.")
-    ap.add_argument("--target_taxid", type=int, default=1280, help="NCBI taxid for the target species (default: 1280).")
+    ap = argparse.ArgumentParser(description="MetaStaph: summarize first-pass classified reads from Kraken2 report and preserve tool evidence.")
+    ap.add_argument("-kr", "--kraken_report", required=True, help="First-pass Kraken2 report generated with the LINtax database.")
+    ap.add_argument("--target_taxid", type=int, help=argparse.SUPPRESS)  # Legacy CLI compatibility; unused.
     ap.add_argument("-st", "--strainge", required=False, help="Path to StrainGE strains TSV.")
     ap.add_argument("-lr", "--linreport", required=False, help="Path to LINtax report CSV.")
     ap.add_argument("-sm", "--sourmash", required=False, help="Path to sourmash gather CSV.")
@@ -239,5 +245,5 @@ if __name__ == "__main__":
     ap.add_argument("-o", "--output", required=True, help="Summary CSV output path.")
     ap.add_argument("-e", "--evidence", required=True, help="Evidence TSV output path.")
     args = ap.parse_args()
-    main(args.kraken_report, args.target_taxid, args.strainge, args.linreport,
+    main(args.kraken_report, args.strainge, args.linreport,
          args.sourmash, args.strainscan, args.sample, args.output, args.evidence)

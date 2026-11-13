@@ -74,5 +74,20 @@ nextflow run main.nf \
   --outdir "$PWD/output"
 ```
 
-
 Use `nextflow run main.nf --help` to display the workflow's usage summary. Results are written to the output directory, including per-sample reports and combined summary/evidence files.
+
+Relative database paths are resolved from the directory where you launch Nextflow before tasks run in their work directories. With older pipeline versions, pass an absolute path such as `--database_dir "$PWD/databases"` to avoid database lookup failures.
+
+## Reports and tool diagnostics
+
+The summary columns are `Sample`, `Classified_reads`, `Kraken_note`, `Tools_reporting_n`, `Tools_reporting`, `Tool_hit_counts`, `Total_tool_hits`, and `Notes`.
+
+`Classified_reads` is the total classified fragments from the **first** Kraken2 pass (`--kraken_confidence`, default 0.1), across all classified taxa. Paired-end reads count as one fragment per pair. The count sums direct assignments, excluding unclassified reads, so nested taxonomy clade counts are not counted twice. It does not require taxid 1280 to appear in the database. The first-pass report is preserved as `<sample_id>.firstpass.kreport`; `<sample_id>.kreport` is the stringent second-pass report used by LINtax.
+
+StrainScan retains `final_report.txt` alongside `strainscan.stdout.log`, `strainscan.stderr.log`, and `strainscan_status.tsv` in the sample's `strainscan_output/` directory. The status file never replaces the report. A valid report with a zero exit code is successful; a report with a nonzero exit code is marked `report_with_error` and remains available as evidence. Header-only reports are `no_hits`; a zero exit without a report is `no_report`. Failed executions retain their real exit code in the status note instead of assuming low sequencing depth. StrainScan receives absolute input/output paths, reserves eight CPUs for its bundled Jellyfish, and runs at most one sample at a time to limit simultaneous resource use.
+
+StrainGE runs with a fixed internal output prefix, then renames results to retain the complete sample ID, including dots. Its stdout/stderr logs are published with the sample results. Failed or empty-input runs produce header-only strain tables with zero hits and a reason in the stats file. Historical `NA` placeholder rows are also excluded from hit counts.
+
+After updating the pipeline, copy the updated `bin/` scripts as well as `main.nf` and `nextflow.config` to the execution machine. Rerun with `-resume`; changed tool tasks and reports need to run again. The tests can be run with `python -B -m unittest discover -s tests -v` in an environment containing pandas.
+
+If Kraken fails, inspect `<sample_id>.kraken.stderr` in the failing task's work directory for its first-pass error, or `<sample_id>.extract_read.log` for a read-extraction error. After correcting the cause, rerun the same command with `-resume` to reuse cached successful tasks.

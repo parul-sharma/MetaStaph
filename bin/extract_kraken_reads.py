@@ -52,9 +52,6 @@ import os, sys, argparse
 import gzip
 from time import gmtime
 from time import strftime
-from Bio import SeqIO
-from Bio.Seq import Seq
-from Bio.SeqRecord import SeqRecord
 #################################################################################
 #Tree Class 
 #usage: tree node used in constructing taxonomy tree  
@@ -113,7 +110,7 @@ def process_kraken_output(kraken_line):
 #   - level number (number of spaces before name)
 #   - level_type (type of taxonomy level - U, R, D, P, C, O, F, G, S, etc) 
 def process_kraken_report(report_line):
-    l_vals = report_line.strip().split('\t')
+    l_vals = report_line.rstrip('\r\n').split('\t')
     if len(l_vals) < 5:
         return []
     try:
@@ -143,9 +140,45 @@ def process_kraken_report(report_line):
             break
     level_num = int(spaces/2)
     return[taxid, level_num, level_type]
+
+
+def parse_report_tree(lines, target_taxids):
+    """Find target nodes using report indentation, including custom-root reports."""
+    base_nodes = {}
+    ancestors = []
+    main_lvls = ['R', 'K', 'D', 'P', 'C', 'O', 'F', 'G', 'S']
+    for line in lines:
+        report_vals = process_kraken_report(line)
+        if not report_vals:
+            continue
+        taxid, level_num, level_id = report_vals
+        if taxid == 0:
+            continue
+        # The LINtax database need not contain NCBI root taxid 1. Each
+        # top-level row starts a tree; shallower rows close ancestor branches.
+        while ancestors and ancestors[-1].level_num >= level_num:
+            ancestors.pop()
+        parent = ancestors[-1] if ancestors else None
+        if taxid == 1:
+            level_id = 'R'
+        elif parent is not None and (level_id == '-' or len(level_id) > 1):
+            if parent.level_id in main_lvls:
+                level_id = parent.level_id + '1'
+            elif parent.level_id[-1:].isdigit():
+                level_id = parent.level_id[:-1] + str(int(parent.level_id[-1]) + 1)
+        node = Tree(taxid, level_num, level_id, parent=parent)
+        if parent is not None:
+            parent.add_child(node)
+        ancestors.append(node)
+        if taxid in target_taxids:
+            base_nodes[taxid] = node
+    return base_nodes
+
 ################################################################################
 #Main method 
 def main():
+    from Bio import SeqIO
+
     #Parse arguments
     parser = argparse.ArgumentParser()
     parser.add_argument('-k', dest='kraken_file', required=True,
@@ -202,7 +235,6 @@ def main():
     save_taxids = {}
     for tid in args.taxid:
         save_taxids[int(tid)] = 0
-    main_lvls = ['R','K','D','P','C','O','F','G','S']
 
     #STEP 0: READ IN REPORT FILE AND GET ALL TAXIDS 
     if args.parents or args.children:
@@ -212,44 +244,8 @@ def main():
             sys.exit(1)
         sys.stdout.write(">> STEP 0: PARSING REPORT FILE %s\n" % args.report_file)
         #create tree and save nodes with taxids in the list 
-        base_nodes = {} 
-        r_file = open(args.report_file,'r')
-        prev_node = -1
-        for line in r_file:
-            #extract values
-            report_vals = process_kraken_report(line)
-            if len(report_vals) == 0:
-                continue
-            [taxid, level_num, level_id] = report_vals
-            if taxid == 0:
-                continue 
-            #tree root
-            if taxid == 1:
-                level_id = 'R'
-                root_node = Tree(taxid, level_num, level_id)
-                prev_node = root_node
-                #save if needed
-                if taxid in save_taxids:
-                    base_nodes[taxid] = root_node
-                continue
-            #move to correct parent
-            while level_num != (prev_node.level_num + 1):
-                prev_node = prev_node.parent 
-            #determine correct level ID 
-            if level_id == '-' or len(level_id) > 1:
-                if prev_node.level_id in main_lvls:
-                    level_id = prev_node.level_id + '1'
-                else:
-                    num = int(prev_node.level_id[-1]) + 1
-                    level_id = prev_node.level_id[:-1] + str(num)
-            #make node
-            curr_node = Tree(taxid, level_num, level_id, None, prev_node)
-            prev_node.add_child(curr_node)
-            prev_node = curr_node
-            #save if taxid matches
-            if taxid in save_taxids:
-                base_nodes[taxid] = curr_node 
-        r_file.close()
+        with open(args.report_file, 'r') as r_file:
+            base_nodes = parse_report_tree(r_file, save_taxids)
         #FOR SAVING PARENTS
         if args.parents:
             #For each node saved, traverse up the tree and save each taxid 
@@ -261,7 +257,7 @@ def main():
         #FOR SAVING CHILDREN 
         if args.children:
             for tid in base_nodes:
-                curr_nodes = base_nodes[tid].children
+                curr_nodes = list(base_nodes[tid].children)
                 while len(curr_nodes) > 0:
                     #For this node
                     curr_n = curr_nodes.pop()

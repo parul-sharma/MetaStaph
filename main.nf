@@ -23,16 +23,19 @@ if (params.help) {
   Notes:
       - Kraken2 uses the LINtax database
       - Target reads are extracted for NCBI taxid ${params.target_taxid}
-      - Classified-read count will be derived from the Kraken2 report
+      - Classified-read count is the total classified fragments in the first Kraken2 pass
   """
   exit 0
 }
+
+// Tasks execute in work directories; resolve database paths from the launch directory.
+def database_dir = file(params.database_dir).toAbsolutePath().normalize()
 
 log.info """
 MetaStaph (mixed-strain aware)
 ===================================
 reads        : ${params.reads}
-database_dir : ${params.database_dir}
+database_dir : ${database_dir}
 outdir       : ${params.outdir}
 cleanup      : ${params.cleanup}
 """.stripIndent()
@@ -42,6 +45,10 @@ cleanup      : ${params.cleanup}
 // StrainScan
 // --------------------
 process run_strainscan {
+  // StrainScan's bundled Jellyfish uses eight threads. Avoid many simultaneous
+  // memory-heavy StrainScan jobs on the local executor.
+  cpus 8
+  maxForks 1
   publishDir "${params.outdir}/${sample_id}", mode: 'copy'
   conda 'envs/strainscan_conda_env.yml'
   tag "strainscan ${sample_id}"
@@ -54,22 +61,7 @@ process run_strainscan {
 
   script:
   """
-  set +e
-  mkdir -p strainscan_output
-
-  strainscan -i ${reads[0]} -j ${reads[1]} -d ${params.database_dir}/strainscan_db -o strainscan_output
-
-  status=\$?
-
-  if [ \$status -ne 0 ]; then
-      echo -e "sample_id\ttool\tstatus\tnote" > strainscan_output/strainscan_status.tsv
-      echo -e "${sample_id}\tStrainScan\tfailed\tStrainScan crashed or produced no stable result; likely low-abundance/low-depth edge case" >> strainscan_output/strainscan_status.tsv
-  else
-      echo -e "sample_id\ttool\tstatus\tnote" > strainscan_output/strainscan_status.tsv
-      echo -e "${sample_id}\tStrainScan\tsuccess\tcompleted" >> strainscan_output/strainscan_status.tsv
-  fi
-
-  exit 0
+  bash "$baseDir/bin/run_strainscan.sh" "${sample_id}" "${reads[0]}" "${reads[1]}" "${database_dir}/strainscan_db"
   """
 }
 
@@ -88,6 +80,7 @@ process run_kraken {
   output:
   tuple val(sample_id), path("${sample_id}.koutput"), emit: kraken_output
   tuple val(sample_id), path("${sample_id}.kreport"), emit: kraken_report
+  tuple val(sample_id), path("${sample_id}.firstpass.kreport"), emit: classification_report
   tuple val(sample_id), path("${sample_id}.classified*.fastq.gz"), emit: classified
   tuple val(sample_id), path("${sample_id}.extract_read.log"), emit: extract_read_log
 
@@ -102,15 +95,19 @@ process run_kraken {
   fi
 
   # Lower confidence retains more candidate target reads; tune as needed
-  kraken2 --db ${params.database_dir}/LINtax_db --paired \$KRAKEN_GZIP ${reads[0]} ${reads[1]} \\
+  kraken2 --db "${database_dir}/LINtax_db" --paired \$KRAKEN_GZIP ${reads[0]} ${reads[1]} \\
     --minimum-hit-groups 4 \\
     --confidence ${params.kraken_confidence} \\
     --output ${sample_id}.koutput \\
-    --report ${sample_id}.kreport > /dev/null 2> ${sample_id}.kraken.stderr
+    --report ${sample_id}.firstpass.kreport > /dev/null 2> ${sample_id}.kraken.stderr || {
+      status=\$?
+      cat ${sample_id}.kraken.stderr >&2
+      exit \$status
+    }
 
   ${baseDir}/bin/extract_kraken_reads.py \\
     -k ${sample_id}.koutput \\
-    --report ${sample_id}.kreport \\
+    --report ${sample_id}.firstpass.kreport \\
     -s1 ${reads[0]} \\
     -s2 ${reads[1]} \\
     -t ${params.target_taxid} \\
@@ -128,7 +125,7 @@ process run_kraken {
   fi
 
   # Run 2: produce koutput/kreport
-  kraken2 --db ${params.database_dir}/LINtax_db --paired \$KRAKEN_GZIP ${reads[0]} ${reads[1]} \\
+  kraken2 --db "${database_dir}/LINtax_db" --paired \$KRAKEN_GZIP ${reads[0]} ${reads[1]} \\
     --minimum-hit-groups 4 \\
     --confidence 0.45 \\
     --output ${sample_id}.koutput \\
@@ -157,7 +154,7 @@ process run_lintax {
   """
   set -euo pipefail
   python $baseDir/bin/report-lin.py --lin_file $baseDir/bin/staph_lintax_lingroups.tsv \\
-    --data_file ${params.database_dir}/LINtax_db/taxonomy/data.txt \\
+    --data_file "${database_dir}/LINtax_db/taxonomy/data.txt" \\
     --in_file_report ${kraken_report} \\
     --in_file_output ${kraken_output} \\
     --output ${sample_id}.LINreport.txt
@@ -204,43 +201,11 @@ process run_strainge {
     output:
     tuple val(sample_id), path("${sample_id}.stats.tsv")
     tuple val(sample_id), path("${sample_id}.strains.tsv"), emit: strainge_out
+    tuple val(sample_id), path("${sample_id}.strainge.*.log"), optional: true, emit: strainge_logs
 
     script:
     """
-    set -u
-
-    make_placeholders () {
-      # Minimal valid placeholders so downstream parsing never breaks
-      cat > ${sample_id}.strains.tsv <<'EOF'
-strain\tgcov
-NA\t0
-EOF
-
-      cat > ${sample_id}.stats.tsv <<'EOF'
-metric\tvalue
-status\tno_ct_reads_or_strainge_failed
-EOF
-    }
-
-    # If the sample hdf5 is missing/empty, just write placeholders
-    if [ ! -s "${sample_hdf5}" ]; then
-      echo "INFO: ${sample_id} sample_hdf5 missing/empty -> placeholders" >&2
-      make_placeholders
-      exit 0
-    fi
-
-    # Run StrainGE; if it fails (e.g. NaN crash), do not fail the pipeline
-    if ! straingst run -O -o ${sample_id} ${params.database_dir}/pan-genome-db_70.hdf5 "${sample_hdf5}" ; then
-      echo "INFO: ${sample_id} StrainGE failed -> placeholders" >&2
-      make_placeholders
-      exit 0
-    fi
-
-    # If outputs weren’t produced for any reason, still create placeholders
-    if [ ! -s ${sample_id}.strains.tsv ] || [ ! -s ${sample_id}.stats.tsv ]; then
-      echo "INFO: ${sample_id} StrainGE outputs missing/empty -> placeholders" >&2
-      make_placeholders
-    fi
+    bash "$baseDir/bin/run_strainge.sh" "${sample_id}" "${sample_hdf5}" "${database_dir}/pan-genome-db_70.hdf5"
     """
 }
 
@@ -282,7 +247,7 @@ process run_sourmash {
   script:
   """
   set -euo pipefail
-  sourmash gather ${sample_sig} ${params.database_dir}/sourmash_145_k31_1000.sbt.zip -o ${sample_id}.gather
+  sourmash gather ${sample_sig} "${database_dir}/sourmash_145_k31_1000.sbt.zip" -o ${sample_id}.gather
   [ -f ${sample_id}.gather ] || touch ${sample_id}.gather
   """
 }
@@ -312,7 +277,6 @@ process run_global_report {
   set -euo pipefail
   python $baseDir/bin/global_report.py \\
     -kr ${kraken_report} \\
-    --target_taxid ${params.target_taxid} \\
     -st ${strainge_out} \\
     -lr ${lintax_out} \\
     -sm ${sourmash_out} \\
@@ -441,7 +405,7 @@ workflow {
 
   // Join inputs by sample_id; since StrainGE writes a placeholder, samples won't disappear here.
   global_inputs =
-    kraken_out_ch.kraken_report
+    kraken_out_ch.classification_report
       .join(strainscan_out_ch.strainscan_out)
       .join(strainge_out_ch.strainge_out)
       .join(lintax_out_ch.lintax_out)
