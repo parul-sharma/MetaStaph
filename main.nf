@@ -8,6 +8,7 @@ params.outdir       = params.outdir       ?: "$baseDir/output"
 params.cleanup      = (params.cleanup != null) ? params.cleanup : true
 params.target_taxid = params.target_taxid ?: 1280
 params.kraken_confidence = params.kraken_confidence ?: 0.1
+params.lintax_confidence = (params.lintax_confidence != null) ? params.lintax_confidence : 0.4
 params.lintax_min_reads = (params.lintax_min_reads != null) ? params.lintax_min_reads : 2
 params.help         = params.help ?: false
 
@@ -21,6 +22,7 @@ if (params.help) {
         [--strainscan_db '/path/to/StrainScan/database/root'] \\
         [--target_taxid 1280] \\
         [--kraken_confidence 0.3] \\
+        [--lintax_confidence 0.4] \\
         [--lintax_min_reads 2] \\
       [--cleanup true|false]
 
@@ -143,7 +145,7 @@ process run_kraken {
   # Run 2: produce koutput/kreport
   kraken2 --db "${database_dir}/LINtax_db" --paired \$KRAKEN_GZIP ${reads[0]} ${reads[1]} \\
     --minimum-hit-groups 4 \\
-    --confidence 0.45 \\
+    --confidence ${params.lintax_confidence} \\
     --output ${sample_id}.koutput \\
     --report ${sample_id}.kreport
   """

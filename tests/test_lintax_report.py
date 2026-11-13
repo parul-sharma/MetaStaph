@@ -62,15 +62,18 @@ class LINtaxTests(unittest.TestCase):
 
     def test_direct_counts_are_distinct_from_clade_counts(self):
         frame = self.make()
-        self.assertEqual(frame.loc['A', 'Unique_Assigned_reads'], 1)
-        self.assertEqual(frame.loc['B', 'Unique_Assigned_reads'], 0)
+        self.assertEqual(frame.loc['A', 'Unique_Assigned_reads'], 2)
+        self.assertEqual(frame.loc['A', 'Direct_Assigned_reads'], 1)
+        self.assertEqual(frame.loc['B', 'Unique_Assigned_reads'], 1)
+        self.assertEqual(frame.loc['B', 'Direct_Assigned_reads'], 0)
         self.assertEqual(frame.loc['B', 'Assigned_reads'], 1)
 
     def test_totals_and_missing_groups_are_filled(self):
         frame = self.make()
         total = frame.loc['Total_reads']
         self.assertEqual(total['Assigned_reads'], 4)
-        self.assertEqual(total['Unique_Assigned_reads'], 1)
+        self.assertEqual(total['Unique_Assigned_reads'], 3)
+        self.assertEqual(total['Direct_Assigned_reads'], 1)
         self.assertEqual(total['Total_reads_length'], 130)
         self.assertFalse(total[['Assigned_reads', 'Unique_Assigned_reads', 'Total_reads_length']].isna().any())
         self.assertEqual(frame.loc['Absent', 'Assigned_reads'], 0)
@@ -84,7 +87,12 @@ class LINtaxTests(unittest.TestCase):
         self.assertEqual(set(report.read_lintax(str(path), 1).Raw_hit), {'A', 'B'})
 
     def test_filter_preserves_descendant_supported_group_with_zero_direct_reads(self):
-        self.groups = ROOT / 'bin/staph_lintax_lingroups.tsv'
+        # Keep this historical regression independent of edits to the live groups.
+        self.groups.write_text('LINgroup_Name\tLINgroup_prefix\n'
+            'CC97_S99.5_44\t0,0,0,0,0,0,0,0,1,0,0,16\n'
+            'OtherA\t0,0,0,0,0,0,0,0,6\n'
+            'OtherB\t0,0,0,0,0,0,0,0,7\n'
+            'OtherC\t0,0,0,0,0,0,0,0,1,0,0,4\n')
         self.taxonomy = ROOT / 'tests/fixtures/lintax_sample_taxonomy.tsv'
         counts = [
             (0, 434, 434), (1, 273091, 0), (8, 273091, 268121),
@@ -103,9 +111,27 @@ class LINtaxTests(unittest.TestCase):
         self.assertEqual(list(hits.LINgroup_Name), ['CC97_S99.5_44'])
         self.assertEqual(hits.iloc[0].Assigned_reads, 2297)
         self.assertEqual(hits.iloc[0].Direct_Assigned_reads, 0)
-        self.assertEqual(hits.iloc[0].Unique_Assigned_reads, 0)
+        self.assertEqual(hits.iloc[0].Unique_Assigned_reads, 2297)
         self.assertEqual(raw.loc[raw.LINgroup_Name == 'Total_reads', 'Assigned_reads'].iloc[0], 273091)
         self.assertEqual((raw.Assigned_reads == 1).sum(), 3)
+
+    def test_overlapping_groups_do_not_double_count_unique_reads(self):
+        self.groups.write_text('LINgroup_Name\tLINgroup_prefix\n'
+                               'Parent\t0,1\nChild\t0,1,0\nOther\t0,10\n')
+        frame = self.make()
+        self.assertEqual(frame.loc['Parent', 'Assigned_reads'], 2)
+        self.assertEqual(frame.loc['Child', 'Assigned_reads'], 1)
+        self.assertEqual(frame.loc['Parent', 'Unique_Assigned_reads'], 1)
+        self.assertEqual(frame.loc['Child', 'Unique_Assigned_reads'], 0)
+        self.assertEqual(frame.loc['Other', 'Unique_Assigned_reads'], 1)
+        self.assertEqual(frame.loc['Total_reads', 'Unique_Assigned_reads'], 2)
+
+    def test_duplicate_prefixes_are_not_unique_to_either_label(self):
+        self.groups.write_text('LINgroup_Name\tLINgroup_prefix\nA\t0,1\nAlias\t0,1\n')
+        frame = self.make()
+        self.assertEqual(frame.loc['A', 'Assigned_reads'], 2)
+        self.assertEqual(frame.loc['Alias', 'Assigned_reads'], 2)
+        self.assertEqual(frame.loc['Total_reads', 'Unique_Assigned_reads'], 0)
 
     def test_minimum_read_threshold(self):
         frame = self.make().reset_index()

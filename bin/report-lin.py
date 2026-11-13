@@ -75,6 +75,24 @@ def assigned_lengths(output_file, paths, group_taxids):
     return lengths, total_length
 
 
+def group_exclusive_counts(direct, paths, group_paths):
+    """Count final taxon assignments belonging to exactly one listed group.
+
+    Descendant assignments support their group, but shared ancestors outside
+    the group and assignments covered by overlapping/duplicate groups do not
+    identify one group uniquely. Sum direct counts, never nested clade totals.
+    """
+    counts = [0] * len(group_paths)
+    for taxid, reads in direct.items():
+        if taxid == 0 or not reads:
+            continue
+        ancestors = set(paths.get(taxid, (taxid,)))
+        owners = [i for i, path in enumerate(group_paths) if path and path[-1] in ancestors]
+        if len(owners) == 1:
+            counts[owners[0]] += reads
+    return counts
+
+
 def make_report(lin_file, data_file, report_file, output_file):
     groups = pd.read_csv(lin_file, sep='\t', dtype=str, keep_default_na=False)
     data = pd.read_csv(data_file, sep='\t', dtype=str, keep_default_na=False)
@@ -84,37 +102,38 @@ def make_report(lin_file, data_file, report_file, output_file):
     total_reads = sum(count for taxid, count in direct.items() if taxid != 0)
     group_paths = [prefixes.get(lin_tokens(prefix), ()) for prefix in groups['LINgroup_prefix']]
     group_taxids = {path[-1] for path in group_paths if path}
+    unique_counts = group_exclusive_counts(direct, paths, group_paths)
     lengths, total_length = assigned_lengths(output_file, paths, group_taxids)
 
     rows = []
-    for (_, group), path in zip(groups.iterrows(), group_paths):
+    for (_, group), path, unique in zip(groups.iterrows(), group_paths, unique_counts):
         taxid = path[-1] if path else None
         reads = clade.get(taxid, 0)
-        unique = direct.get(taxid, 0)
         row = group.to_dict()
         row.update({
             'Assigned_reads': reads,
             'Percentage_assigned_reads': 100.0 * reads / total_reads if total_reads else 0.0,
-            # Legacy column name: this is a direct group-node count, not a
-            # claim that these reads uniquely identify a strain.
+            # Exclusive among listed LINgroups, including descendants. This
+            # does not claim sequence-level uniqueness or strain resolution.
             'Unique_Assigned_reads': unique,
-            'Direct_Assigned_reads': unique,
+            'Direct_Assigned_reads': direct.get(taxid, 0),
             'Percentage_unique_assigned_reads': 100.0 * unique / total_reads if total_reads else 0.0,
             'Total_reads_length': lengths[taxid] if taxid is not None else 0,
             'LINtax_note': '' if path else 'group_prefix_missing_from_taxonomy',
         })
         rows.append(row)
-    total_unique = sum(direct.get(taxid, 0) for taxid in group_taxids)
+    total_unique = sum(unique_counts)
+    total_direct = sum(direct.get(taxid, 0) for taxid in group_taxids)
     total = {column: '' for column in groups.columns}
     total.update({
         'LINgroup_Name': 'Total_reads',
         'Assigned_reads': total_reads,
         'Percentage_assigned_reads': 100.0 if total_reads else 0.0,
         'Unique_Assigned_reads': total_unique,
-        'Direct_Assigned_reads': total_unique,
+        'Direct_Assigned_reads': total_direct,
         'Percentage_unique_assigned_reads': 100.0 * total_unique / total_reads if total_reads else 0.0,
         'Total_reads_length': total_length,
-        'LINtax_note': 'classified_fragments; unique_count_is_direct_group_node_assignments',
+        'LINtax_note': 'classified_fragments; unique_count_is_exclusive_to_one_listed_LINgroup_including_descendants; unique_total_includes_groups_below_reporting_cutoff',
     })
     rows.append(total)
     return pd.DataFrame(rows)

@@ -46,6 +46,12 @@ conda activate metastaph
 
 The included [nextflow.config](nextflow.config) enables Conda environments and prefers Mamba. Nextflow will create the tool environments defined under `envs/` on the first run.
 
+With Nextflow 26.04 or later, select the legacy parser before running this workflow (also used in the local tests):
+
+```bash
+export NXF_SYNTAX_PARSER=v1
+```
+
 ### 3. Download the StrainGE database
 
 Download `pan-genome-db_9.hdf5` (approximately 1.67 GB) from [Figshare, version 1](https://doi.org/10.6084/m9.figshare.34999555.v1). From the repository directory, run:
@@ -95,15 +101,17 @@ Relative database paths are resolved from the directory where you launch Nextflo
 
 The summary columns are `Sample`, `Classified_reads`, `Kraken_note`, `Tools_reporting_n`, `Tools_reporting`, `Tool_hit_counts`, `Total_tool_hits`, and `Notes`.
 
-`Classified_reads` is the total classified fragments from the **first** Kraken2 pass (`--kraken_confidence`, default 0.1), across all classified taxa. Paired-end reads count as one fragment per pair. The count sums direct assignments, excluding unclassified reads, so nested taxonomy clade counts are not counted twice. It does not require taxid 1280 to appear in the database. The first-pass report is preserved as `<sample_id>.firstpass.kreport`; `<sample_id>.kreport` is the stringent second-pass report used by LINtax.
+`Classified_reads` is the total classified fragments from the **first** Kraken2 pass (`--kraken_confidence`, default 0.1), across all classified taxa. Paired-end reads count as one fragment per pair. The count sums direct assignments, excluding unclassified reads, so nested taxonomy clade counts are not counted twice. It does not require taxid 1280 to appear in the database. The first-pass report is preserved as `<sample_id>.firstpass.kreport`; `<sample_id>.kreport` is the second-pass report used by LINtax (`--lintax_confidence`, default 0.4).
 
 StrainScan retains `final_report.txt` alongside `strainscan.stdout.log`, `strainscan.stderr.log`, and `strainscan_status.tsv` in the sample's `strainscan_output/` directory. The status file never replaces the report. A valid report with a zero exit code is successful; a report with a nonzero exit code is marked `report_with_error` and remains available as evidence. Header-only reports are `no_hits`; a zero exit without a report is `no_report`. Failed executions retain their real exit code in the status note instead of assuming low sequencing depth. StrainScan receives absolute input/output paths, reserves eight CPUs for its bundled Jellyfish, and runs at most one sample at a time to limit simultaneous resource use.
 
 The StrainScan database root must contain `Tree_database/tree_structure.txt`. MetaStaph checks this before launching tasks and recognizes the bundled nested layout `databases/strainscan_db/db/`. To use the database from a standalone StrainScan run, pass `--strainscan_db '/absolute/path/to/database/root'`.
 
-LINtax's `Assigned_reads` includes assignments to the group's descendants. The legacy `Unique_Assigned_reads` field counts assignments **directly to the group node**, as reported by Kraken; it does not measure strain-specific unique reads. It can legitimately be zero when reads are assigned to more specific descendant nodes. `Total_reads_length` includes both mates and descendant assignments. The `Total_reads` row reports all classified fragments, their total bases, and the sum of direct group-node assignments; its numeric fields are filled and it is excluded from tool-hit counts. Percentages use all classified fragments as the denominator, including assignments above the listed groups. LIN prefixes are matched by comma-separated components so `0,1` cannot match `0,10`. Missing group prefixes are flagged in `LINtax_note`. Multiple groups with positive assignments remain separate evidence hits; the reporter does not force a single-strain result.
+LINtax's `Assigned_reads` includes assignments to the group's descendants. `Direct_Assigned_reads` counts only assignments exactly to the group node. `Unique_Assigned_reads` counts final Kraken assignments to the group or its descendants that belong to **exactly one listed LINgroup**. Shared ancestors outside a group are excluded; assignments covered by overlapping or duplicate groups are excluded from their unique counts to prevent double counting. For disjoint groups, unique and clade counts normally agree. These are group-specific taxonomic assignments, not a measure of sequence-level uniqueness or proof of a particular strain within a multi-strain group.
 
-LINtax reports require at least **two assigned fragments per group** by default (`--lintax_min_reads 2`). This removes singleton groups from `<sample_id>.LINreport.txt` and from summary/evidence hit counts. The unfiltered counts remain in `<sample_id>.LINreport.raw.csv`. Increase the threshold to require more support, or set it to 1 to include singleton hits. This is a reporting cutoff, not a validated accuracy threshold. `Direct_Assigned_reads` explicitly names the same direct-node count retained in the legacy `Unique_Assigned_reads` column. Groups supported by descendant assignments remain eligible even when their direct-node count is zero. Neither column measures sequence-level uniqueness.
+`Total_reads_length` includes both mates and descendant assignments. The `Total_reads` row reports all classified fragments, their total bases, the sum of exclusive group assignments, and direct group-node assignments. These totals include groups below the reporting cutoff; the raw report retains their individual counts. Percentages use all classified fragments as the denominator, including assignments above the listed groups. LIN prefixes are matched by comma-separated components so `0,1` cannot match `0,10`. Missing group prefixes are flagged in `LINtax_note` in the raw report.
+
+LINtax reports require at least **two assigned fragments per group** by default (`--lintax_min_reads 2`). This removes singleton groups from `<sample_id>.LINreport.txt` and summary/evidence hit counts. The unfiltered counts remain in `<sample_id>.LINreport.raw.csv`. Increase the threshold to require more support, or set it to 1 to include singleton hits. This is a reporting cutoff, not a validated accuracy threshold. Multiple qualifying groups remain separate evidence hits.
 
 StrainGE runs with a fixed internal output prefix, then renames results to retain the complete sample ID, including dots. Its stdout/stderr logs are published with the sample results. Failed or empty-input runs produce header-only strain tables with zero hits and a reason in the stats file. Historical `NA` placeholder rows are also excluded from hit counts.
 
