@@ -3,6 +3,7 @@ nextflow.enable.dsl = 2
 
 params.reads        = params.reads        ?: "$baseDir/sample/*_R{1,2}.fastq.gz"
 params.database_dir = params.database_dir ?: "$baseDir/databases"
+params.strainscan_db = params.strainscan_db ?: null
 params.outdir       = params.outdir       ?: "$baseDir/output"
 params.cleanup      = (params.cleanup != null) ? params.cleanup : true
 params.target_taxid = params.target_taxid ?: 1280
@@ -16,6 +17,7 @@ if (params.help) {
       --reads 'path/*_R{1,2}.fastq.gz' \\
       --database_dir '/path/to/databases' \\
       --outdir '/path/to/output' \\
+        [--strainscan_db '/path/to/StrainScan/database/root'] \\
         [--target_taxid 1280] \\
         [--kraken_confidence 0.3] \\
       [--cleanup true|false]
@@ -30,12 +32,21 @@ if (params.help) {
 
 // Tasks execute in work directories; resolve database paths from the launch directory.
 def database_dir = file(params.database_dir).toAbsolutePath().normalize()
+def strainscan_db = file(params.strainscan_db ?: "${database_dir}/strainscan_db").toAbsolutePath().normalize()
+if (!file("${strainscan_db}/Tree_database/tree_structure.txt").exists() &&
+    file("${strainscan_db}/db/Tree_database/tree_structure.txt").exists()) {
+  strainscan_db = file("${strainscan_db}/db").toAbsolutePath().normalize()
+}
+if (!file("${strainscan_db}/Tree_database/tree_structure.txt").exists()) {
+  error "StrainScan database missing: ${strainscan_db}/Tree_database/tree_structure.txt. Set --strainscan_db to the database root used by your standalone StrainScan run."
+}
 
 log.info """
 MetaStaph (mixed-strain aware)
 ===================================
 reads        : ${params.reads}
 database_dir : ${database_dir}
+strainscan_db: ${strainscan_db}
 outdir       : ${params.outdir}
 cleanup      : ${params.cleanup}
 """.stripIndent()
@@ -61,7 +72,7 @@ process run_strainscan {
 
   script:
   """
-  bash "$baseDir/bin/run_strainscan.sh" "${sample_id}" "${reads[0]}" "${reads[1]}" "${database_dir}/strainscan_db"
+  bash "$baseDir/bin/run_strainscan.sh" "${sample_id}" "${reads[0]}" "${reads[1]}" "${strainscan_db}"
   """
 }
 

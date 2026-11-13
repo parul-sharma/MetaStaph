@@ -173,10 +173,13 @@ def read_lintax(linreport_file: str) -> pd.DataFrame:
     required = {"LINgroup_Name", "Assigned_reads"}
     if not required.issubset(set(df.columns)):
         return pd.DataFrame(rows)
+    # The aggregate row is a denominator, never a detected LINgroup.
+    df = df[df["LINgroup_Name"].notna() & (df["LINgroup_Name"] != "Total_reads")]
     if "Percentage_assigned_reads" in df.columns:
         df["Percentage_assigned_reads"] = pd.to_numeric(df["Percentage_assigned_reads"], errors="coerce").fillna(0.0)
         df = df[(df["Percentage_assigned_reads"] > 0)]
     df["Assigned_reads"] = pd.to_numeric(df["Assigned_reads"], errors="coerce").fillna(0).astype(int)
+    df = df[df["Assigned_reads"] > 0]
     df = df.sort_values("Assigned_reads", ascending=False)
     for i, (_, rec) in enumerate(df.iterrows(), start=1):
         raw = str(rec["LINgroup_Name"])
